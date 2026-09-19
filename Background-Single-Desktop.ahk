@@ -1,44 +1,109 @@
-﻿; Minimize windows only on the monitor that was clicked
+#Requires AutoHotkey v2.0
+#SingleInstance Force
 
-~LButton::
-    MouseGetPos, mouseX, mouseY, targetWindow
-    WinGetClass, winClass, ahk_id %targetWindow%
+CoordMode "Mouse", "Screen"
+
+; Variables for tracking desktop clicks per monitor
+global DesktopClickCount := 0
+global WindowToMinimize := 0
+global ClickedMonitor := 1
+
+; --- Track when the background is clicked ---
+~LButton:: {
+    global DesktopClickCount, WindowToMinimize, ClickedMonitor
+    MouseGetPos &startX, &startY, &winID
+    winClass := WinGetClass(winID)
     
-    if (winClass = "Progman" || winClass = "WorkerW") {
-        ; Monitor clicked?
-        targetMonitor := GetMonitorAt(mouseX, mouseY)
+    ; --- Handle Background/Desktop Clicks ---
+    ; "WorkerW" and "Progman" are the window classes for the Windows desktop background
+    if (winClass = "WorkerW" || winClass = "Progman") {
+        ClickedMonitor := GetMonitorAt(startX, startY)
         
-        WinGet, windowList, List
+        if (DesktopClickCount > 0) {
+            ; DOUBLE CLICK DETECTED: Minimize only the top window
+            DesktopClickCount += 1
+            SetTimer DesktopClickAction, 0 ; Cancel the single-click timer
+            
+            if (WindowToMinimize) {
+                Try WinMinimize(WindowToMinimize)
+            }
+            DesktopClickCount := 0
+        } else {
+            ; FIRST CLICK DETECTED: Wait to see if it becomes a double click
+            DesktopClickCount := 1
+            ; Pre-calculate the top window just in case they click a second time
+            WindowToMinimize := GetTopNormalWindowOnMonitor(ClickedMonitor)
+            SetTimer DesktopClickAction, -400 ; Wait 400ms to see if a second click occurs
+        }
+        return
+    }
+    
+    ; If clicking anywhere else, resolve the pending desktop single-click immediately
+    if (DesktopClickCount > 0) {
+        SetTimer DesktopClickAction, 0
+        DesktopClickAction()
+    }
+}
+
+; --- Desktop Click Action Resolvers ---
+
+; SINGLE CLICK TRIGGER: Fires if 400ms passes without a second click
+DesktopClickAction() {
+    global DesktopClickCount, ClickedMonitor
+    DesktopClickCount := 0
+    
+    ; Minimize ALL windows on the monitor
+    MinimizeWindowsOnMonitor(ClickedMonitor)
+}
+
+; Finds the highest Z-order visible window on the specified monitor
+GetTopNormalWindowOnMonitor(targetMonIndex) {
+    hwndList := WinGetList()
+    for hwnd in hwndList {
+        title := WinGetTitle(hwnd)
+        class := WinGetClass(hwnd)
+        style := WinGetStyle(hwnd)
         
-        Loop, %windowList%
-        {
-            thisHWND := windowList%A_Index%
-            
-            ; Skips weirdo windows
-            WinGetTitle, title, ahk_id %thisHWND%
-            WinGet, style, Style, ahk_id %thisHWND%
-            if (!title || !(style & 0x10000000)) ; WS_VISIBLE check
-                continue
-                
-            WinGetPos, wx, wy, ww, wh, ahk_id %thisHWND%
-            wCenterX := wx + (ww / 2)
-            wCenterY := wy + (wh / 2)
-            
-            if (GetMonitorAt(wCenterX, wCenterY) = targetMonitor) {
-                WinMinimize, ahk_id %thisHWND%
+        ; Needs to be a visible window, have a title, and not be a shell/desktop component
+        if ((style & 0x10000000) && title != "" && class != "Progman" && class != "WorkerW" && class != "Shell_TrayWnd" && class != "Shell_SecondaryTrayWnd") {
+            Try {
+                WinGetPos &wX, &wY, &wW, &wH, hwnd
+                winMonIndex := GetMonitorAt(wX + (wW / 2), wY + (wH / 2)) ; Check center of window
+                if (winMonIndex == targetMonIndex) {
+                    return hwnd
+                }
             }
         }
-        
-        KeyWait, LButton
     }
-return
+    return 0
+}
 
-; Helper func.
+; Minimizes all standard windows located on the specified monitor
+MinimizeWindowsOnMonitor(targetMonIndex) {
+    hwndList := WinGetList()
+    for hwnd in hwndList {
+        title := WinGetTitle(hwnd)
+        class := WinGetClass(hwnd)
+        style := WinGetStyle(hwnd)
+        
+        ; Target visible windows excluding the desktop and taskbars
+        if ((style & 0x10000000) && title != "" && class != "Progman" && class != "WorkerW" && class != "Shell_TrayWnd" && class != "Shell_SecondaryTrayWnd") {
+            Try {
+                WinGetPos &wX, &wY, &wW, &wH, hwnd
+                winMonIndex := GetMonitorAt(wX + (wW / 2), wY + (wH / 2)) ; Check center of window
+                if (winMonIndex == targetMonIndex) {
+                    WinMinimize(hwnd) 
+                }
+            }
+        }
+    }
+}
+
+; --- Helper: Find which monitor the mouse is on ---
 GetMonitorAt(x, y) {
-    SysGet, monitorCount, MonitorCount
-    Loop, %monitorCount% {
-        SysGet, mon, Monitor, %A_Index%
-        if (x >= monLeft && x < monRight && y >= monTop && y < monBottom)
+    Loop MonitorGetCount() {
+        MonitorGet A_Index, &Left, &Top, &Right, &Bottom
+        if (x >= Left && x <= Right && y >= Top && y <= Bottom)
             return A_Index
     }
     return 1
